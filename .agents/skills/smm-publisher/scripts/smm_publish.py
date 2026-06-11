@@ -65,6 +65,73 @@ def get_file_path(uri):
     path = uri.replace('file://', '')
     return urllib.parse.unquote(path)
 
+def parse_network_content(text):
+    lines = [line.strip() for line in text.split('\n')]
+    
+    cta = None
+    link = None
+    keywords_list = []
+    
+    # 1. Extract CTA and Link lines from anywhere (usually at the end)
+    filtered_lines = []
+    for line in lines:
+        if not line:
+            filtered_lines.append(line)
+            continue
+            
+        # Match CTA Button: or CTA:
+        cta_match = re.match(r'^(?:CTA Button|CTA)\s*:\s*(.*)$', line, re.IGNORECASE)
+        if cta_match:
+            cta = cta_match.group(1).strip()
+            continue
+            
+        # Match Link:
+        link_match = re.match(r'^Link\s*:\s*(.*)$', line, re.IGNORECASE)
+        if link_match:
+            link = link_match.group(1).strip()
+            continue
+            
+        filtered_lines.append(line)
+        
+    # 2. Extract leading and trailing hashtag lines
+    while len(filtered_lines) > 0:
+        first_line = filtered_lines[0]
+        if not first_line:
+            filtered_lines.pop(0)
+            continue
+        if re.match(r'^(?:\s*#[^\s#]+)+\s*$', first_line):
+            tags = re.findall(r'#[^\s#]+', first_line)
+            keywords_list.extend(tags)
+            filtered_lines.pop(0)
+        else:
+            break
+            
+    while len(filtered_lines) > 0:
+        last_line = filtered_lines[-1]
+        if not last_line:
+            filtered_lines.pop()
+            continue
+        if re.match(r'^(?:\s*#[^\s#]+)+\s*$', last_line):
+            tags = re.findall(r'#[^\s#]+', last_line)
+            keywords_list.extend(tags)
+            filtered_lines.pop()
+        else:
+            break
+            
+    raw_input_text = '\n'.join(filtered_lines).strip()
+    keywords_str = ', '.join(keywords_list) if keywords_list else ''
+    
+    result = {
+        "rawInput": raw_input_text,
+        "keywords": keywords_str
+    }
+    if cta is not None:
+        result["CTA"] = cta
+    if link is not None:
+        result["Link"] = link
+        
+    return result
+
 def process_file(filepath):
     print(f"Обробка файлу: {filepath}")
     try:
@@ -117,12 +184,32 @@ def process_file(filepath):
     for network, text in matches:
         contents[network.strip().lower()] = text.strip()
 
-    # Prepare payload and files as parts of a multipart/form-data request
-    multipart_data = {
-        'id': (None, str(post.get('id') or '')),
-        'net_list': (None, json.dumps(target_networks, ensure_ascii=False), 'application/json'),
-        'content': (None, json.dumps(contents, ensure_ascii=False), 'application/json')
+    # Extract metadata from Markdown content body
+    metadata = {}
+    metadata_matches = re.findall(r'\*\*([a-zA-Z_]+)\*\*:\s*(.*)', post.content)
+    for k, v in metadata_matches:
+        metadata[k.strip()] = v.strip()
+
+    submitted_at = post.get('submittedAt') or metadata.get('submittedAt') or ''
+    net_str = post.get('networks') or ', '.join(networks) or ''
+
+    # Prepare parsed content for each network
+    parsed_content = {}
+    for net, text in contents.items():
+        parsed_content[net] = parse_network_content(text)
+
+    # Prepare payload data (sent as form fields in body)
+    form_data = {
+        'id': str(post.get('id') or ''),
+        'status': str(post.get('status') or 'ready'),
+        'submittedAt': str(submitted_at),
+        'net': str(net_str),
+        'net_list': json.dumps(target_networks, ensure_ascii=False),
+        'content': json.dumps(parsed_content, ensure_ascii=False)
     }
+
+    # Prepare file dictionary
+    files = {}
 
     media_path = get_file_path(post.get('media'))
     media_ln_path = get_file_path(post.get('media_ln'))
@@ -150,7 +237,7 @@ def process_file(filepath):
             mime_type, _ = mimetypes.guess_type(media_path)
             if not mime_type:
                 mime_type = 'image/png' if media_path.lower().endswith('.png') else 'image/jpeg'
-            multipart_data['media_image'] = (os.path.basename(media_path), f_media, mime_type)
+            files['original_image'] = (os.path.basename(media_path), f_media, mime_type)
             
         if media_ln_path and os.path.exists(media_ln_path):
             f_ln = open(media_ln_path, 'rb')
@@ -158,7 +245,7 @@ def process_file(filepath):
             mime_type_ln, _ = mimetypes.guess_type(media_ln_path)
             if not mime_type_ln:
                 mime_type_ln = 'image/png' if media_ln_path.lower().endswith('.png') else 'image/jpeg'
-            multipart_data['linkedin_image'] = (os.path.basename(media_ln_path), f_ln, mime_type_ln)
+            files['linkedin_image'] = (os.path.basename(media_ln_path), f_ln, mime_type_ln)
 
         # 1. Update status to 'processing' before HTTP request to avoid duplicate publications
         print(f"Зміна статусу на 'processing' перед надсиланням запиту: {filepath}")
@@ -172,7 +259,8 @@ def process_file(filepath):
         }
         response = requests.post(
             N8N_WEBHOOK_URL,
-            files=multipart_data,
+            data=form_data,
+            files=files if files else None,
             headers=headers,
             timeout=300  # 5 minutes timeout in case of long approvals
         )
@@ -215,6 +303,11 @@ def process_file(filepath):
 
     except Exception as e:
         print(f"Помилка відправки або обробки файлу {filepath}: {e}")
+        try:
+            if 'response' in locals() and response is not None:
+                print(f"Текст відповіді сервера: {response.text}")
+        except Exception:
+            pass
         # 3. Rollback: revert status back to original_status so it can be retried later
         try:
             print(f"Повернення статусу до '{original_status}' через збій")
