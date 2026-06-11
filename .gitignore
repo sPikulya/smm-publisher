@@ -1,0 +1,12 @@
+# IDE & System files
+.DS_Store
+
+# Environment variables / credentials
+.env
+
+# Python virtual environment
+venv/
+.venv/
+
+# Custom agents/skills to ignore
+.agents/skills/skill-creator/
