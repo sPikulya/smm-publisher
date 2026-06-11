@@ -10,3 +10,4 @@ venv/
 
 # Custom agents/skills to ignore
 .agents/skills/skill-creator/
+.agents/skills/smm-publisher/venv/

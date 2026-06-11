@@ -68,7 +68,8 @@ def get_file_path(uri):
 def process_file(filepath):
     print(f"Обробка файлу: {filepath}")
     try:
-        post = frontmatter.load(filepath)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            post = frontmatter.load(f)
     except Exception as e:
         print(f"Помилка читання файлу {filepath}: {e}")
         return False
@@ -116,15 +117,13 @@ def process_file(filepath):
     for network, text in matches:
         contents[network.strip().lower()] = text.strip()
 
-    # Prepare payload
-    data_payload = {
-        "id": post.get('id'),
-        "net_list": target_networks,
-        "content": contents
+    # Prepare payload and files as parts of a multipart/form-data request
+    multipart_data = {
+        'id': (None, str(post.get('id') or '')),
+        'net_list': (None, json.dumps(target_networks, ensure_ascii=False), 'application/json'),
+        'content': (None, json.dumps(contents, ensure_ascii=False), 'application/json')
     }
 
-    # Prepare files
-    files = {}
     media_path = get_file_path(post.get('media'))
     media_ln_path = get_file_path(post.get('media_ln'))
     
@@ -144,15 +143,22 @@ def process_file(filepath):
     open_files = []
     original_status = status
     try:
+        import mimetypes
         if media_path and os.path.exists(media_path):
             f_media = open(media_path, 'rb')
             open_files.append(f_media)
-            files['media_image'] = (os.path.basename(media_path), f_media)
+            mime_type, _ = mimetypes.guess_type(media_path)
+            if not mime_type:
+                mime_type = 'image/png' if media_path.lower().endswith('.png') else 'image/jpeg'
+            multipart_data['media_image'] = (os.path.basename(media_path), f_media, mime_type)
             
         if media_ln_path and os.path.exists(media_ln_path):
             f_ln = open(media_ln_path, 'rb')
             open_files.append(f_ln)
-            files['linkedin_image'] = (os.path.basename(media_ln_path), f_ln)
+            mime_type_ln, _ = mimetypes.guess_type(media_ln_path)
+            if not mime_type_ln:
+                mime_type_ln = 'image/png' if media_ln_path.lower().endswith('.png') else 'image/jpeg'
+            multipart_data['linkedin_image'] = (os.path.basename(media_ln_path), f_ln, mime_type_ln)
 
         # 1. Update status to 'processing' before HTTP request to avoid duplicate publications
         print(f"Зміна статусу на 'processing' перед надсиланням запиту: {filepath}")
@@ -161,10 +167,13 @@ def process_file(filepath):
             f.write(frontmatter.dumps(post))
 
         print(f"Відправка до n8n: {target_networks}")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
         response = requests.post(
             N8N_WEBHOOK_URL,
-            data={"data": json.dumps(data_payload)},
-            files=files if files else None,
+            files=multipart_data,
+            headers=headers,
             timeout=300  # 5 minutes timeout in case of long approvals
         )
         response.raise_for_status()

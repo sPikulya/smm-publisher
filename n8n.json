@@ -162,7 +162,7 @@
                 "httpMethod": "POST",
                 "path": "smm-post-input",
                 "options": {
-                    "binaryPropertyName": "data",
+                    "binaryPropertyName": "media_image, linkedin_image",
                     "ignoreBots": true
                 }
             },
